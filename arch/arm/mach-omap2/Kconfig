@@ -452,6 +452,13 @@ config OMAP_OCFREQ_2000
         help
           Enable the 2.0GHz MPU frequency slot.
 
+config FORCE_FAST_CHARGE
+       bool "Force AC charge mode at will"
+       default y
+       help
+         A simple sysfs interface to force adapters that
+         are detected as USB to charge as AC.
+
 endmenu
 
 endif
