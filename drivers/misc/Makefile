@@ -62,3 +62,4 @@ obj-$(CONFIG_FSYNC_CONTROL)	+= fsync_control.o
 obj-$(CONFIG_LIVE_OC)		+= live_oc.o
 obj-$(CONFIG_SOUND_CONTROL)	+= sound_control.o
 obj-$(CONFIG_VIBRATOR_CONTROL)	+= vibrator_control.o
+obj-$(CONFIG_TOUCH_WAKE)	+= touch_wake.o
