@@ -420,8 +420,6 @@ config OMAP_OVERRIDE_MPUTRIM
 	  Override factory-set trim value for MPU DPLL to allow locking at 
 	  rates >2.4GHz (required for MPU frequencies >1.2GHz).
 
-<<<<<<< HEAD
-=======
 config OMAP_SMARTREFLEX_CUSTOM_SENSOR
 	bool "Enable support for custom NSensor and PSensor values"
 	depends on OMAP_SMARTREFLEX
@@ -460,7 +458,6 @@ config OMAP_REGULATOR_VOLTCHANGE
 	help
 	  Allow voltage changes for regulators.
 
->>>>>>> 2e536ea1... Added kernel config options 'OMAP_SMARTREFLEX_CUSTOM_SENSOR',
 endmenu
 
 endif
