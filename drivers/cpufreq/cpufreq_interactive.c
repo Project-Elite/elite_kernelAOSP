@@ -19,8 +19,6 @@
 #include <linux/cpu.h>
 #include <linux/cpumask.h>
 #include <linux/cpufreq.h>
-#include <linux/module.h>
-#include <linux/moduleparam.h>
 #include <linux/mutex.h>
 #include <linux/sched.h>
 #include <linux/tick.h>
@@ -40,11 +38,10 @@ static atomic_t active_count = ATOMIC_INIT(0);
 struct cpufreq_interactive_cpuinfo {
 	struct timer_list cpu_timer;
 	int timer_idlecancel;
-	spinlock_t load_lock; /* protects the next 4 fields */
 	u64 time_in_idle;
 	u64 time_in_idle_timestamp;
-	u64 cputime_speedadj;
-	u64 cputime_speedadj_timestamp;
+	u64 target_set_time;
+	u64 target_set_time_in_idle;
 	struct cpufreq_policy *policy;
 	struct cpufreq_frequency_table *freq_table;
 	unsigned int target_freq;
@@ -100,11 +97,6 @@ static unsigned long above_hispeed_delay_val;
 
 static int boost_val;
 
-static bool governidle;
-module_param(governidle, bool, S_IWUSR | S_IRUGO);
-MODULE_PARM_DESC(governidle,
-	"Set to 1 to wake up CPUs from idle to reduce speed (default 0)");
-
 static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 		unsigned int event);
 
@@ -123,13 +115,9 @@ static void cpufreq_interactive_timer_resched(
 {
 	mod_timer_pinned(&pcpu->cpu_timer,
 			 jiffies + usecs_to_jiffies(timer_rate));
-	spin_lock(&pcpu->load_lock);
 	pcpu->time_in_idle =
 		get_cpu_idle_time_us(smp_processor_id(),
 				     &pcpu->time_in_idle_timestamp);
-	pcpu->cputime_speedadj = 0;
-	pcpu->cputime_speedadj_timestamp = pcpu->time_in_idle_timestamp;
-	spin_unlock(&pcpu->load_lock);
 }
 
 static unsigned int freq_to_targetload(unsigned int freq)
@@ -154,9 +142,10 @@ static unsigned int freq_to_targetload(unsigned int freq)
  */
 
 static unsigned int choose_freq(
-	struct cpufreq_interactive_cpuinfo *pcpu, unsigned int loadadjfreq)
+	struct cpufreq_interactive_cpuinfo *pcpu, unsigned int curload)
 {
 	unsigned int freq = pcpu->policy->cur;
+	unsigned int loadadjfreq = freq * curload;
 	unsigned int prevfreq, freqmin, freqmax;
 	unsigned int tl;
 	int index;
@@ -235,36 +224,16 @@ static unsigned int choose_freq(
 	return freq;
 }
 
-static u64 update_load(int cpu)
-{
-	struct cpufreq_interactive_cpuinfo *pcpu = &per_cpu(cpuinfo, cpu);
-	u64 now;
-	u64 now_idle;
-	unsigned int delta_idle;
-	unsigned int delta_time;
-	u64 active_time;
-
-	now_idle = get_cpu_idle_time_us(cpu, &now);
-	delta_idle = (unsigned int)(now_idle - pcpu->time_in_idle);
-	delta_time = (unsigned int)(now - pcpu->time_in_idle_timestamp);
-	active_time = delta_time - delta_idle;
-	pcpu->cputime_speedadj += active_time * pcpu->policy->cur;
-
-	pcpu->time_in_idle = now_idle;
-	pcpu->time_in_idle_timestamp = now;
-	return now;
-}
-
 static void cpufreq_interactive_timer(unsigned long data)
 {
-	u64 now;
+	unsigned int delta_idle;
 	unsigned int delta_time;
-	u64 cputime_speedadj;
 	int cpu_load;
+	int load_since_change;
 	struct cpufreq_interactive_cpuinfo *pcpu =
 		&per_cpu(cpuinfo, data);
+	u64 now_idle;
 	unsigned int new_freq;
-	unsigned int loadadjfreq;
 	unsigned int index;
 	unsigned long flags;
 
@@ -273,24 +242,58 @@ static void cpufreq_interactive_timer(unsigned long data)
 	if (!pcpu->governor_enabled)
 		goto exit;
 
-	spin_lock(&pcpu->load_lock);
-	now = update_load(data);
-	delta_time = (unsigned int)(now - pcpu->cputime_speedadj_timestamp);
-	cputime_speedadj = pcpu->cputime_speedadj;
-	spin_unlock(&pcpu->load_lock);
+	/*
+	 * Once pcpu->timer_run_time is updated to >= pcpu->idle_exit_time,
+	 * this lets idle exit know the current idle time sample has
+	 * been processed, and idle exit can generate a new sample and
+	 * re-arm the timer.  This prevents a concurrent idle
+	 * exit on that CPU from writing a new set of info at the same time
+	 * the timer function runs (the timer function can't use that info
+	 * until more time passes).
+	 */
+	time_in_idle = pcpu->time_in_idle;
+	idle_exit_time = pcpu->idle_exit_time;
+	now_idle = get_cpu_idle_time_us(data, &pcpu->timer_run_time);
+	smp_wmb();
 
-	if (WARN_ON_ONCE(!delta_time))
+	/* If we raced with cancelling a timer, skip. */
+	if (!idle_exit_time)
+		goto exit;
+
+	delta_idle = (unsigned int) cputime64_sub(now_idle, time_in_idle);
+	delta_time = (unsigned int) cputime64_sub(pcpu->timer_run_time,
+						  idle_exit_time);
+
+	/*
+	 * If timer ran less than 1ms after short-term sample started, retry.
+	 */
+	if (delta_time < 1000)
 		goto rearm;
 
-	do_div(cputime_speedadj, delta_time);
-	loadadjfreq = (unsigned int)cputime_speedadj * 100;
-	cpu_load = loadadjfreq / pcpu->target_freq;
+	if (delta_idle > delta_time)
+		cpu_load = 0;
+	else
+		cpu_load = 100 * (delta_time - delta_idle) / delta_time;
+
+	if ((delta_time == 0) || (delta_idle > delta_time))
+		load_since_change = 0;
+	else
+		load_since_change =
+			100 * (delta_time - delta_idle) / delta_time;
+
+	/*
+	 * Choose greater of short-term load (since last idle timer
+	 * started or timer function re-armed itself) or long-term load
+	 * (since last frequency change).
+	 */
+	if (load_since_change > cpu_load)
+		cpu_load = load_since_change;
 
 	if ((cpu_load >= go_hispeed_load || boost_val) &&
 	    pcpu->target_freq < hispeed_freq)
 		new_freq = hispeed_freq;
 	else
-		new_freq = choose_freq(pcpu, loadadjfreq);
+		new_freq = choose_freq(pcpu, cpu_load);
 
 	if (pcpu->target_freq >= hispeed_freq &&
 	    new_freq > pcpu->target_freq &&
@@ -327,7 +330,7 @@ static void cpufreq_interactive_timer(unsigned long data)
 	}
 
 	pcpu->floor_freq = new_freq;
-	pcpu->floor_validate_time = now;
+	pcpu->floor_validate_time = pcpu->timer_run_time;
 
 	if (pcpu->target_freq == new_freq) {
 		trace_cpufreq_interactive_already(
@@ -356,14 +359,23 @@ rearm_if_notmax:
 rearm:
 	if (!timer_pending(&pcpu->cpu_timer)) {
 		/*
-		 * If governing speed in idle and already at min, cancel the
-		 * timer if that CPU goes idle.  We don't need to re-evaluate
-		 * speed until the next idle exit.
+		 * If already at min: if that CPU is idle, don't set timer.
+		 * Else cancel the timer if that CPU goes idle.  We don't
+		 * need to re-evaluate speed until the next idle exit.
 		 */
-		if (governidle && pcpu->target_freq == pcpu->policy->min)
-			pcpu->timer_idlecancel = 1;
+		if (pcpu->target_freq == pcpu->policy->min) {
+			smp_rmb();
 
-		cpufreq_interactive_timer_resched(pcpu);
+			if (pcpu->idling)
+				goto exit;
+
+			pcpu->timer_idlecancel = 1;
+		}
+
+		pcpu->time_in_idle = get_cpu_idle_time_us(
+			data, &pcpu->idle_exit_time);
+		mod_timer(&pcpu->cpu_timer,
+			  jiffies + usecs_to_jiffies(timer_rate));
 	}
 
 exit:
@@ -379,9 +391,12 @@ static void cpufreq_interactive_idle_start(void)
 	if (!pcpu->governor_enabled)
 		return;
 
+	pcpu->idling = 1;
+	smp_wmb();
 	pending = timer_pending(&pcpu->cpu_timer);
 
 	if (pcpu->target_freq != pcpu->policy->min) {
+#ifdef CONFIG_SMP
 		/*
 		 * Entering idle while not at lowest speed.  On some
 		 * platforms this can hold the other CPU(s) at that speed
@@ -391,10 +406,14 @@ static void cpufreq_interactive_idle_start(void)
 		 * the CPUFreq driver.
 		 */
 		if (!pending) {
+			pcpu->time_in_idle = get_cpu_idle_time_us(
+				smp_processor_id(), &pcpu->idle_exit_time);
 			pcpu->timer_idlecancel = 0;
-			cpufreq_interactive_timer_resched(pcpu);
+			mod_timer(&pcpu->cpu_timer,
+				  jiffies + usecs_to_jiffies(timer_rate));
 		}
-	} else if (governidle) {
+#endif
+	} else {
 		/*
 		 * If at min speed and entering idle after load has
 		 * already been evaluated, and a timer has been set just in
@@ -403,6 +422,12 @@ static void cpufreq_interactive_idle_start(void)
 		 */
 		if (pending && pcpu->timer_idlecancel) {
 			del_timer(&pcpu->cpu_timer);
+			/*
+			 * Ensure last timer run time is after current idle
+			 * sample start time, so next idle exit will always
+			 * start a new idle sampling period.
+			 */
+			pcpu->idle_exit_time = 0;
 			pcpu->timer_idlecancel = 0;
 		}
 	}
@@ -417,15 +442,31 @@ static void cpufreq_interactive_idle_end(void)
 	if (!pcpu->governor_enabled)
 		return;
 
-	/* Arm the timer for 1-2 ticks later if not already. */
-	if (!timer_pending(&pcpu->cpu_timer)) {
+	pcpu->idling = 0;
+	smp_wmb();
+
+	/*
+	 * Arm the timer for 1-2 ticks later if not already, and if the timer
+	 * function has already processed the previous load sampling
+	 * interval.  (If the timer is not pending but has not processed
+	 * the previous interval, it is probably racing with us on another
+	 * CPU.  Let it compute load based on the previous sample and then
+	 * re-arm the timer for another interval when it's done, rather
+	 * than updating the interval start time to be "now", which doesn't
+	 * give the timer function enough time to make a decision on this
+	 * run.)
+	 */
+	if (timer_pending(&pcpu->cpu_timer) == 0 &&
+	    pcpu->timer_run_time >= pcpu->idle_exit_time &&
+	    pcpu->governor_enabled) {
+		pcpu->time_in_idle =
+			get_cpu_idle_time_us(smp_processor_id(),
+					     &pcpu->idle_exit_time);
 		pcpu->timer_idlecancel = 0;
-		cpufreq_interactive_timer_resched(pcpu);
-	} else if (!governidle &&
-		   time_after_eq(jiffies, pcpu->cpu_timer.expires)) {
-		del_timer(&pcpu->cpu_timer);
-		cpufreq_interactive_timer(smp_processor_id());
+		mod_timer(&pcpu->cpu_timer,
+			  jiffies + usecs_to_jiffies(timer_rate));
 	}
+
 }
 
 static int cpufreq_interactive_speedchange_task(void *data)
@@ -520,32 +561,6 @@ static void cpufreq_interactive_boost(void)
 	if (anyboost)
 		wake_up_process(speedchange_task);
 }
-
-static int cpufreq_interactive_notifier(
-	struct notifier_block *nb, unsigned long val, void *data)
-{
-	struct cpufreq_freqs *freq = data;
-	struct cpufreq_interactive_cpuinfo *pcpu;
-	int cpu;
-
-	if (val == CPUFREQ_POSTCHANGE) {
-		pcpu = &per_cpu(cpuinfo, freq->cpu);
-
-		for_each_cpu(cpu, pcpu->policy->cpus) {
-			struct cpufreq_interactive_cpuinfo *pjcpu =
-				&per_cpu(cpuinfo, cpu);
-			spin_lock(&pjcpu->load_lock);
-			update_load(cpu);
-			spin_unlock(&pjcpu->load_lock);
-		}
-	}
-
-	return 0;
-}
-
-static struct notifier_block cpufreq_notifier_block = {
-	.notifier_call = cpufreq_interactive_notifier,
-};
 
 static ssize_t show_target_loads(
 	struct kobject *kobj, struct attribute *attr, char *buf)
@@ -833,8 +848,6 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 
 		freq_table =
 			cpufreq_frequency_get_table(policy->cpu);
-		if (!hispeed_freq)
-			hispeed_freq = policy->max;
 
 		for_each_cpu(j, policy->cpus) {
 			pcpu = &per_cpu(cpuinfo, j);
@@ -848,10 +861,10 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 				pcpu->floor_validate_time;
 			pcpu->governor_enabled = 1;
 			smp_wmb();
-			pcpu->cpu_timer.expires =
-				jiffies + usecs_to_jiffies(timer_rate);
-			add_timer_on(&pcpu->cpu_timer, j);
 		}
+
+		if (!hispeed_freq)
+			hispeed_freq = policy->max;
 
 		/*
 		 * Do not register the idle hook and create sysfs
@@ -866,8 +879,6 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 			return rc;
 
 		idle_notifier_register(&cpufreq_interactive_idle_nb);
-		cpufreq_register_notifier(
-			&cpufreq_notifier_block, CPUFREQ_TRANSITION_NOTIFIER);
 		break;
 
 	case CPUFREQ_GOV_STOP:
@@ -876,13 +887,19 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 			pcpu->governor_enabled = 0;
 			smp_wmb();
 			del_timer_sync(&pcpu->cpu_timer);
+
+			/*
+			 * Reset idle exit time since we may cancel the timer
+			 * before it can run after the last idle exit time,
+			 * to avoid tripping the check in idle exit for a timer
+			 * that is trying to run.
+			 */
+			pcpu->idle_exit_time = 0;
 		}
 
 		if (atomic_dec_return(&active_count) > 0)
 			return 0;
 
-		cpufreq_unregister_notifier(
-			&cpufreq_notifier_block, CPUFREQ_TRANSITION_NOTIFIER);
 		idle_notifier_unregister(&cpufreq_interactive_idle_nb);
 		sysfs_remove_group(cpufreq_global_kobject,
 				&interactive_attr_group);
@@ -915,13 +932,9 @@ static int __init cpufreq_interactive_init(void)
 	/* Initalize per-cpu timers */
 	for_each_possible_cpu(i) {
 		pcpu = &per_cpu(cpuinfo, i);
-		if (governidle)
-			init_timer(&pcpu->cpu_timer);
-		else
-			init_timer_deferrable(&pcpu->cpu_timer);
+		init_timer(&pcpu->cpu_timer);
 		pcpu->cpu_timer.function = cpufreq_interactive_timer;
 		pcpu->cpu_timer.data = i;
-		spin_lock_init(&pcpu->load_lock);
 	}
 
 	spin_lock_init(&target_loads_lock);
