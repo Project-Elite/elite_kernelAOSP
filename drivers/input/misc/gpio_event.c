@@ -23,6 +23,7 @@
 
 #ifdef CONFIG_LIVE_OC
 #include <linux/live_oc.h>
+#endif
 
 #ifdef CONFIG_TOUCH_WAKE
 #include <linux/touch_wake.h>
