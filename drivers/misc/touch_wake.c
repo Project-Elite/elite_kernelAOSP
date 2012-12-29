@@ -21,7 +21,7 @@
 extern void touchscreen_enable(void);
 extern void touchscreen_disable(void);
 
-static bool touchwake_enabled = true;
+static bool touchwake_enabled = false;
 static bool touch_disabled = false;
 static bool device_suspended = false;
 static bool timed_out = true;
