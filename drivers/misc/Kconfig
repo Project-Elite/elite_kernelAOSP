@@ -599,11 +599,6 @@ config SOUND_CONTROL
 	default y
 	help
 	  Enable support for Sound Control
-config VIBRATOR_CONTROL
-	bool "Support for Vibrator Control"
-	default y
-	help
-	  Say Y here to enable Vibrator Control
 
 config TOUCH_WAKE
 	bool "Support for Touch Wake"
