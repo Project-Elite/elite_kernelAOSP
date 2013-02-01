@@ -215,15 +215,15 @@ void __sched __down_write_nested(struct rw_semaphore *sem, int subclass)
 		if (sem->activity == 0)
 			break;
 		set_task_state(tsk, TASK_UNINTERRUPTIBLE);
-		spin_unlock_irqrestore(&sem->wait_lock, flags);
+		raw_spin_unlock_irqrestore(&sem->wait_lock, flags);
 		schedule();
-		spin_lock_irqsave(&sem->wait_lock, flags);
+		raw_spin_lock_irqsave(&sem->wait_lock, flags);
 	}
 	/* got the lock */
 	sem->activity = -1;
 	list_del(&waiter.list);
 
-	spin_unlock_irqrestore(&sem->wait_lock, flags);
+	raw_spin_unlock_irqrestore(&sem->wait_lock, flags);
 }
 
 void __sched __down_write(struct rw_semaphore *sem)
