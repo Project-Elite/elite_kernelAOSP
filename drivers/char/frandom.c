@@ -53,9 +53,6 @@ static struct class *frandom_class;
 struct device *frandom_device;
 struct device *erandom_device;
 
-MODULE_DESCRIPTION("Fast pseudo-random number generator");
-MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Eli Billauer");
 module_param(frandom_major, int, 0);
 module_param(frandom_minor, int, 0);
 module_param(erandom_minor, int, 0);
@@ -415,6 +412,6 @@ module_exit(frandom_cleanup_module);
 EXPORT_SYMBOL(erandom_get_random_bytes);
 
 MODULE_AUTHOR("Eli Billauer <eli@billauer.co.il>");
-MODULE_DESCRIPTION("'char_random_frandom' - A fast random generator for "
+MODULE_DESCRIPTION("'char_random_frandom' - A fast psuedo-random number generator for "
 	"general usage");
 MODULE_LICENSE("GPL");
