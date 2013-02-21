@@ -449,6 +449,7 @@ static struct freq_attr *omap_cpufreq_attr[] = {
 	&omap_cpufreq_attr_screen_off_freq,
 	NULL,
 };
+#endif
 
 static struct cpufreq_driver omap_driver = {
 	.flags		= CPUFREQ_STICKY,
