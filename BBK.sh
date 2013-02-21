@@ -4,7 +4,7 @@
 # Path to toolchain
   cco=~/kernel/android-toolchain-eabi/bin/arm-eabi-
 # Path to build your kernel
-  k=~/kernel/elite_kernelAOSP
+  k=~/kernel/elite_kernelAOSP30x
 # Directory for the any kernel updater
   t=$k/tools/bbk
 # Export betas to your dropbox
