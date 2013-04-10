@@ -179,7 +179,6 @@ static int gpio_event_probe(struct platform_device *pdev)
 		    {
 			liveoc_register_powerkey(input_dev);
 		    }
-#endif
 
 #ifdef CONFIG_TOUCH_WAKE
 		if (!strcmp(input_dev->name, "tuna-gpio-keypad"))
