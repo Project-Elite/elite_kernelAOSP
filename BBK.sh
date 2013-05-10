@@ -2,7 +2,7 @@
 # Bits and pieces borrowed from cvpcs and xoomdev build scripts
 # Required build variables,  adjust according to your own.
 # Path to toolchain
-  cco=~/kernel/android-toolchain-eabi/bin/arm-eabi-
+  cco=~/kernel/android-toolchain-eabi-4.8/bin/arm-eabi-
 # Path to build your kernel
   k=~/kernel/elite_kernelAOSP
 # Directory for the any kernel updater
