@@ -373,7 +373,7 @@ KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
 		   -mcpu=cortex-a9 \
 		   -mno-unaligned-access
 KBUILD_AFLAGS_KERNEL :=
-KBUILD_CFLAGS_KERNEL := -Os -mtune=cortex-a9 -march=armv7-a -mfpu=neon -ftree-vectorize
+KBUILD_CFLAGS_KERNEL := -O3 -mtune=cortex-a9 -march=armv7-a -mfpu=neon -ftree-vectorize
 KBUILD_AFLAGS   := -D__ASSEMBLY__
 KBUILD_AFLAGS_MODULE  := -DMODULE
 KBUILD_CFLAGS_MODULE  := -DMODULE
