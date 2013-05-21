@@ -562,9 +562,9 @@ endif # $(dot-config)
 all: vmlinux
 
 ifdef CONFIG_CC_OPTIMIZE_FOR_SIZE
-KBUILD_CFLAGS	+= -Os
-else
 KBUILD_CFLAGS	+= -O2
+else
+KBUILD_CFLAGS	+= -Os
 endif
 
 include $(srctree)/arch/$(SRCARCH)/Makefile
